@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <style>
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      background: transparent; overflow: hidden;
+      cursor: grab; user-select: none;
+    }
+    #c {
+      position: absolute; left: 3px; top: 3px; width: 40px; height: 40px;
+      box-sizing: border-box; border-radius: 50%;
+      border: 2px solid #ffffff;
+      background: rgba(255, 70, 70, 0.45);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.65), 0 2px 6px rgba(0, 0, 0, 0.5);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font: 700 14px/1 "Segoe UI", sans-serif;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    }
+    body.dragging, body.dragging #c { cursor: grabbing; }
+  </style>
+</head>
+<body>
+  <div id="c">1</div>
+  <script>
+    const c = document.getElementById('c');
+    let dragging = false, gx = 0, gy = 0;
+
+    window.overlayAPI.onLabel((n) => { c.textContent = n; });
+
+    c.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      gx = e.clientX;   // grab offset within the window
+      gy = e.clientY;
+      document.body.classList.add('dragging');
+      c.setPointerCapture(e.pointerId);
+    });
+
+    c.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      // Keep the grabbed point under the cursor: window top-left = cursor - grab.
+      window.overlayAPI.move(e.screenX - gx, e.screenY - gy);
+    });
+
+    const end = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove('dragging');
+      try { c.releasePointerCapture(e.pointerId); } catch (_) {}
+      window.overlayAPI.moveEnd();
+    };
+    c.addEventListener('pointerup', end);
+    c.addEventListener('pointercancel', end);
+  </script>
+</body>
+</html>

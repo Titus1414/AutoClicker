@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:" />
+  <title>AutoClicker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="toolbar">
+    <div class="group">
+      <button id="addBtn" class="btn">＋ Add Click</button>
+      <button id="addKeyBtn" class="btn">⌨ Add Key</button>
+      <button id="copyBtn" class="btn ghost" disabled>Copy</button>
+      <button id="pasteBtn" class="btn ghost" disabled>Paste</button>
+    </div>
+    <div class="group right">
+      <button id="runBtn" class="btn run">▶ Run</button>
+      <button id="stopBtn" class="btn stop" disabled>■ Stop</button>
+      <span id="status" class="status idle">Idle</span>
+    </div>
+  </header>
+
+  <main>
+    <table id="table">
+      <thead>
+        <tr>
+          <th class="col-sel"><input type="checkbox" id="selectAll" title="Select all" /></th>
+          <th class="col-num">#</th>
+          <th class="col-pos">Position / Keys</th>
+          <th class="col-btn">Action</th>
+          <th class="col-delay">Delay before next step</th>
+          <th class="col-act">Order</th>
+          <th class="col-act"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty">Nothing yet. Press <b>＋ Add Click</b> to add a mouse click (then <b>Set</b> its position), or <b>⌨ Add Key</b> to add a keyboard shortcut like Ctrl+C.</div>
+  </main>
+
+  <footer class="footer">
+    <label class="check">
+      <input type="checkbox" id="hideCircles" /> Hide click circles
+    </label>
+    <span class="hints">
+      <kbd>F6</kbd> set selected click's position at cursor &nbsp;•&nbsp; <kbd>F8</kbd> run / stop
+    </span>
+  </footer>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
