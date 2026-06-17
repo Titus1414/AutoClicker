@@ -19,6 +19,13 @@
       color: #fff; font: 700 14px/1 "Segoe UI", sans-serif;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
     }
+    /* Drag markers: start (where the button goes down) and end (release). */
+    #c.start { background: rgba(91, 140, 255, 0.45); }
+    #c.end { background: rgba(46, 200, 90, 0.45); border-style: dashed; }
+    /* Scroll marker: where the wheel turns. */
+    #c.scroll { background: rgba(190, 120, 255, 0.45); }
+    /* Condition marker: the pixel/region a condition step samples. */
+    #c.cond { background: rgba(255, 196, 0, 0.45); border-style: dotted; }
     body.dragging, body.dragging #c { cursor: grabbing; }
   </style>
 </head>
@@ -28,7 +35,10 @@
     const c = document.getElementById('c');
     let dragging = false, gx = 0, gy = 0;
 
-    window.overlayAPI.onLabel((n) => { c.textContent = n; });
+    window.overlayAPI.onLabel((m) => {
+      c.textContent = m.label;
+      c.className = m.kind || 'click';   // 'click' | 'start' | 'end' -> tint
+    });
 
     c.addEventListener('pointerdown', (e) => {
       dragging = true;

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "AutoClicker - create sequenced clicks with fixed or random delays and run them in a loop.",
   "main": "src/main/main.js",
-  "author": "Treszon",
+  "author": "Titas",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
@@ -17,7 +17,7 @@
     "@nut-tree-fork/nut-js": "^4.2.0"
   },
   "build": {
-    "appId": "com.treszon.autoclicker",
+    "appId": "com.titas.autoclicker",
     "productName": "AutoClicker",
     "files": [
       "src/**/*",
