@@ -62,10 +62,13 @@ class OverlayManager {
       const m = this.meta.get(key) || { label: '1', kind: 'click' };
       if (!win.isDestroyed()) win.webContents.send('label', m);
     });
-    win.on('closed', () => { this.wcToKey.delete(win.webContents.id); });
+    // Capture the webContents id now: in the 'closed' handler the window is
+    // already destroyed, so win.webContents would throw "Object has been destroyed".
+    const wcId = win.webContents.id;
+    win.on('closed', () => { this.wcToKey.delete(wcId); });
 
     this.byKey.set(key, win);
-    this.wcToKey.set(win.webContents.id, key);
+    this.wcToKey.set(wcId, key);
     return win;
   }
 
