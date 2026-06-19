@@ -24,7 +24,7 @@ const state = {
   // untouched; `mode` picks which one the UI shows and F8 toggles.
   browserSteps: [],
   mode: 'screen',           // 'screen' | 'browser'
-  browser: { url: '' },     // last navigated URL (restored on launch)
+  browser: { url: '', loop: false }, // last URL (restored) + loop-the-sequence toggle
   settings: { hideCircles: false, captureKey: 'F6', toggleKey: 'F8' },
 };
 let clipboard = [];   // copied click templates (no ids)
@@ -44,6 +44,7 @@ function loadState() {
       if (Array.isArray(parsed.browserSteps)) state.browserSteps = parsed.browserSteps.map(normalizeBrowserStep);
       if (parsed.mode === 'browser' || parsed.mode === 'screen') state.mode = parsed.mode;
       if (parsed.browser && typeof parsed.browser.url === 'string') state.browser.url = parsed.browser.url;
+      if (parsed.browser && parsed.browser.loop) state.browser.loop = true;
       Object.assign(state.settings, parsed.settings || {});
       nextId = maxId([...state.clicks, ...state.browserSteps]) + 1;
     }
@@ -201,7 +202,11 @@ function setPoint(c, field, x, y) {
     // Condition steps store their sample point inside `check` (kept in DIP).
     c.check.x = Math.round(x);
     c.check.y = Math.round(y);
-  } else if (c.type === 'drag' && field === 'end') {
+  } else if (c.type === 'if' && c.cond) {
+    // Browser screen-condition stores its sample point inside `cond`.
+    c.cond.x = Math.round(x);
+    c.cond.y = Math.round(y);
+  } else if ((c.type === 'drag' || c.type === 'screenDrag') && field === 'end') {
     c.x2 = Math.round(x);
     c.y2 = Math.round(y);
   } else {
@@ -210,12 +215,21 @@ function setPoint(c, field, x, y) {
   }
 }
 
+// Look up a step by id in either list (screen clicks or browser steps).
+function anyStepById(id) {
+  return state.clicks.find((c) => c.id === id) || (findBrowserStep(id) || {}).step || null;
+}
+
 // ---------- browser step model ----------
 // Browser Bot steps are DOM-aware: they target elements by CSS selector (and an
 // optional matching text), so they need no coordinate conversion. The `if` step
 // nests child step lists (`then`/`else`) for true branching.
-const BROWSER_TYPES = ['navigate', 'clickEl', 'typeText', 'waitFor', 'waitTimeout', 'read', 'scrollToEl', 'if'];
-const COND_KINDS = ['elementExists', 'elementVisible', 'textExists', 'attrEquals', 'attrContains'];
+const BROWSER_TYPES = ['navigate', 'clickEl', 'typeText', 'waitFor', 'waitTimeout', 'read', 'scrollToEl', 'if',
+  'screenClick', 'screenDrag', 'screenScroll', 'key'];
+// DOM conditions plus the screen-clicker condition kinds (pixel / image / loop).
+const DOM_COND_KINDS = ['elementExists', 'elementVisible', 'textExists', 'attrEquals', 'attrContains'];
+const SCREEN_COND_KINDS = ['pixel', 'pixelChanged', 'image', 'loop'];
+const COND_KINDS = [...DOM_COND_KINDS, ...SCREEN_COND_KINDS];
 
 const str = (v) => (typeof v === 'string' ? v : '');
 const nn = (v) => Math.max(0, Math.round(Number(v) || 0));
@@ -232,6 +246,9 @@ function normalizeDelay(d = {}) {
 }
 
 function normalizeCond(cond = {}) {
+  // DOM fields plus the screen-condition fields (so pixel/image/loop kinds
+  // round-trip). Reuses normalizeCheck for the screen-sample fields.
+  const sc = normalizeCheck(cond);
   return {
     kind: COND_KINDS.includes(cond.kind) ? cond.kind : 'elementExists',
     selector: str(cond.selector),
@@ -239,6 +256,11 @@ function normalizeCond(cond = {}) {
     nth: nn(cond.nth),
     attr: str(cond.attr) || 'href',
     value: str(cond.value),
+    // screen-sample fields (used when kind is pixel/pixelChanged/image/loop)
+    x: sc.x, y: sc.y, w: sc.w, h: sc.h,
+    color: sc.color, tolerance: sc.tolerance,
+    signature: sc.signature, confidence: sc.confidence,
+    loopMode: sc.loopMode, loopN: sc.loopN,
   };
 }
 
@@ -274,6 +296,36 @@ function normalizeBrowserStep(s = {}) {
       };
     case 'scrollToEl':
       return { ...base, selector: str(s.selector), text: str(s.text), nth: nn(s.nth) };
+    // ----- screen (coordinate / OS-level) steps, mirroring normalizeClick -----
+    case 'screenClick':
+      return {
+        ...base,
+        x: Math.round(s.x) || 0, y: Math.round(s.y) || 0,
+        stepX: Number(s.stepX) || 0, stepY: Number(s.stepY) || 0,
+        button: ['left', 'right', 'middle'].includes(s.button) ? s.button : 'left',
+        double: !!s.double,
+      };
+    case 'screenDrag':
+      return {
+        ...base,
+        x: Math.round(s.x) || 0, y: Math.round(s.y) || 0,
+        x2: Math.round(s.x2) || 0, y2: Math.round(s.y2) || 0,
+        button: ['left', 'right', 'middle'].includes(s.button) ? s.button : 'left',
+        duration: Math.max(0, Math.round(Number(s.duration) || 0)),
+      };
+    case 'screenScroll':
+      return {
+        ...base,
+        x: Math.round(s.x) || 0, y: Math.round(s.y) || 0,
+        direction: ['up', 'down', 'left', 'right'].includes(s.direction) ? s.direction : 'down',
+        amount: Math.max(0, Math.round(Number(s.amount) || 0)),
+      };
+    case 'key':
+      return {
+        ...base,
+        modifiers: Array.isArray(s.modifiers) ? s.modifiers.filter((m) => MODIFIERS.includes(m)) : [],
+        key: typeof s.key === 'string' ? s.key : '',
+      };
     case 'if':
       return {
         ...base, cond: normalizeCond(s.cond),
@@ -290,7 +342,17 @@ function makeBrowserStep(kind) {
   // Action steps fire as soon as their target is ready, so default to no extra
   // pause; a Wait step is all about its delay, so give it a sensible 1s.
   const delay = type === 'waitTimeout' ? { value: 1 } : { value: 0 };
-  return normalizeBrowserStep({ id: nextId++, type, delay });
+  const base = { id: nextId++, type, delay };
+  // Coordinate steps start at the current cursor position (like makeClick).
+  if (type === 'screenClick' || type === 'screenScroll' || type === 'screenDrag') {
+    const pt = screen.getCursorScreenPoint();
+    base.x = pt.x; base.y = pt.y;
+    if (type === 'screenDrag') { base.x2 = pt.x + 160; base.y2 = pt.y; base.duration = 300; }
+    if (type === 'screenScroll') { base.direction = 'down'; base.amount = 3; }
+  } else if (type === 'key') {
+    base.modifiers = ['ctrl']; base.key = 'C';
+  }
+  return normalizeBrowserStep(base);
 }
 
 // Largest id across a (possibly nested) step list, so nextId never collides.
@@ -367,6 +429,30 @@ function toRuntime(c) {
   };
 }
 
+// Convert a browser step's screen coordinates DIP -> physical (mirrors
+// toRuntime). DOM steps pass through untouched; `if` recurses into then/else.
+// Screen-condition sample points stay in DIP (colorAt/grabRegion scale them).
+function toBrowserRuntime(s) {
+  if (s.type === 'screenClick') {
+    const p = dipToPhysical(s.x, s.y);
+    const p2 = dipToPhysical(s.x + s.stepX, s.y + s.stepY);
+    return { ...s, x: p.x, y: p.y, stepX: p2.x - p.x, stepY: p2.y - p.y };
+  }
+  if (s.type === 'screenDrag') {
+    const a = dipToPhysical(s.x, s.y);
+    const b = dipToPhysical(s.x2, s.y2);
+    return { ...s, x: a.x, y: a.y, x2: b.x, y2: b.y };
+  }
+  if (s.type === 'screenScroll') {
+    const p = dipToPhysical(s.x, s.y);
+    return { ...s, x: p.x, y: p.y };
+  }
+  if (s.type === 'if') {
+    return { ...s, then: (s.then || []).map(toBrowserRuntime), else: (s.else || []).map(toBrowserRuntime) };
+  }
+  return s; // navigate / clickEl / typeText / waitFor / read / scrollToEl / key / waitTimeout
+}
+
 // ---------- broadcast / sync ----------
 function publicState() {
   return {
@@ -386,7 +472,37 @@ function publicState() {
 
 // Build the on-screen markers from the click list. A click has one marker; a
 // drag has two (start + end). Key clients (capture/move) parse "<id>:<field>".
+// Markers for the browser-mode screen steps (incl. nested if branches),
+// numbered in pre-order. Keys reuse "<id>:<field>"; ids are unique across both
+// lists, so overlay:moveEnd can resolve them via findBrowserStep.
+function browserOverlayMarkers() {
+  const markers = [];
+  let n = 0;
+  const walk = (list) => {
+    for (const s of list || []) {
+      n++;
+      const label = String(n);
+      if (s.type === 'screenClick') {
+        markers.push({ key: `${s.id}:pos`, label, kind: 'click', x: s.x, y: s.y });
+      } else if (s.type === 'screenDrag') {
+        markers.push({ key: `${s.id}:start`, label, kind: 'start', x: s.x, y: s.y });
+        markers.push({ key: `${s.id}:end`, label, kind: 'end', x: s.x2, y: s.y2 });
+      } else if (s.type === 'screenScroll') {
+        markers.push({ key: `${s.id}:pos`, label, kind: 'scroll', x: s.x, y: s.y });
+      } else if (s.type === 'if') {
+        if (['pixel', 'pixelChanged', 'image'].includes(s.cond.kind)) {
+          markers.push({ key: `${s.id}:cond`, label, kind: 'cond', x: s.cond.x, y: s.cond.y });
+        }
+        walk(s.then); walk(s.else);
+      }
+    }
+  };
+  walk(state.browserSteps);
+  return markers;
+}
+
 function overlayMarkers() {
+  if (state.mode === 'browser') return browserOverlayMarkers();
   const markers = [];
   state.clicks.forEach((c, idx) => {
     const n = String(idx + 1);
@@ -408,7 +524,7 @@ function overlayMarkers() {
 function syncOverlays() {
   // Circles are hidden while running so automated clicks land on the real target.
   // Key steps have no on-screen marker.
-  const visible = !state.settings.hideCircles && !engine.running;
+  const visible = !state.settings.hideCircles && !engine.running && !browserEngine.running;
   overlays.sync(overlayMarkers(), visible);
 }
 
@@ -451,8 +567,10 @@ function sendBrowserEngine(payload) {
 function startBrowserRun() {
   if (browserEngine.running || state.browserSteps.length === 0) return;
   if (!browserGuestWc || browserGuestWc.isDestroyed()) return;
+  // Convert screen-step DIP coords -> physical; DOM steps pass through.
+  const runtime = state.browserSteps.map(toBrowserRuntime);
   browserEngine
-    .run(state.browserSteps, (id) => sendBrowserEngine({ running: true, currentId: id }))
+    .run(runtime, (id) => sendBrowserEngine({ running: true, currentId: id }), { loop: !!state.browser.loop })
     .then(() => {
       sendBrowserEngine({ running: false, currentId: null });
       broadcast();
@@ -465,32 +583,34 @@ function stopBrowserRun() {
   browserEngine.stop();
 }
 
-// F8 toggles whichever mode is currently shown.
+// Start/stop both engines together so the screen clicker and browser bot run
+// concurrently. Each starter is guarded (no-ops if already running or empty),
+// so this safely starts whichever side actually has steps.
+function startBoth() { startRun(); startBrowserRun(); }
+function stopBoth() { engine.stop(); browserEngine.stop(); }
+
+// F8 toggles both: if either is running, stop both; otherwise start both.
 function toggleRun() {
-  if (state.mode === 'browser') {
-    if (browserEngine.running) stopBrowserRun();
-    else startBrowserRun();
-  } else {
-    if (engine.running) stopRun();
-    else startRun();
-  }
+  if (engine.running || browserEngine.running) stopBoth();
+  else startBoth();
 }
 
 async function doCapture() {
   if (!armed) return;
-  const c = state.clicks.find((c) => c.id === armed.id);
+  const c = anyStepById(armed.id);
   if (!c) { armed = null; return; }
   const pt = screen.getCursorScreenPoint(); // DIP
   setPoint(c, armed.field, pt.x, pt.y);
-  // For a condition step, also sample the screen at the captured DIP point so
-  // the test gets a baseline color / region signature to compare against.
-  if (c.type === 'condition') {
+  // For a pixel/image condition (screen-clicker `condition` or browser `if`),
+  // also sample the screen so the test has a baseline color / region signature.
+  const ch = c.type === 'condition' ? c.check : (c.type === 'if' ? c.cond : null);
+  const kind = ch && (ch.type || ch.kind);
+  if (ch && (kind === 'image' || kind === 'pixel' || kind === 'pixelChanged')) {
     try {
-      const ch = c.check;
-      if (ch.type === 'image') {
+      if (kind === 'image') {
         const img = await nutScreen.grabRegion(new NutRegion(ch.x, ch.y, ch.w, ch.h));
         ch.signature = signatureOf(img);
-      } else if (ch.type === 'pixel' || ch.type === 'pixelChanged') {
+      } else {
         const col = await nutScreen.colorAt(new NutPoint(ch.x, ch.y));
         ch.color = '#' + [col.R, col.G, col.B].map((v) => v.toString(16).padStart(2, '0')).join('');
       }
@@ -587,10 +707,14 @@ ipcMain.on('pasteClicks', () => {
 });
 
 ipcMain.on('armCapture', (_e, { id, field }) => {
-  const c = state.clicks.find((c) => c.id === id);
-  // Steps with a screen point (click, drag, scroll, condition) can capture.
-  // Toggle off if re-armed.
-  const positional = c && (c.type === 'click' || c.type === 'drag' || c.type === 'scroll' || c.type === 'condition');
+  const c = anyStepById(id);
+  // Steps with a screen point can capture (screen-clicker click/drag/scroll/
+  // condition, or browser screenClick/Drag/Scroll and pixel/image `if`).
+  const positional = c && (
+    c.type === 'click' || c.type === 'drag' || c.type === 'scroll' || c.type === 'condition' ||
+    c.type === 'screenClick' || c.type === 'screenDrag' || c.type === 'screenScroll' ||
+    (c.type === 'if' && ['pixel', 'pixelChanged', 'image'].includes(c.cond && c.cond.kind))
+  );
   const f = field || 'pos';
   if (positional && !(armed && armed.id === id && armed.field === f)) {
     armed = { id, field: f };
@@ -612,6 +736,11 @@ ipcMain.on('setSettings', (_e, patch) => {
 // ---------- Browser Bot IPC ----------
 ipcMain.on('setMode', (_e, mode) => {
   state.mode = mode === 'browser' ? 'browser' : 'screen';
+  broadcast();
+});
+
+ipcMain.on('setBrowserLoop', (_e, on) => {
+  state.browser.loop = !!on;
   broadcast();
 });
 
@@ -703,6 +832,10 @@ ipcMain.on('browser:pickResult', (_e, payload) => {
 ipcMain.on('browser:run', startBrowserRun);
 ipcMain.on('browser:stop', stopBrowserRun);
 
+// Run/stop both engines at once (screen clicker + browser bot concurrently).
+ipcMain.on('runBoth', startBoth);
+ipcMain.on('stopBoth', stopBoth);
+
 // Overlay drag: live move, then commit center back to the marker on release.
 ipcMain.on('overlay:move', (e, { x, y }) => {
   const key = overlays.idOf(e.sender);
@@ -715,7 +848,7 @@ ipcMain.on('overlay:moveEnd', (e) => {
   const center = overlays.center(key);
   if (!center) return;
   const [idStr, field] = key.split(':');
-  const c = state.clicks.find((c) => c.id === Number(idStr));
+  const c = anyStepById(Number(idStr));
   if (c) { setPoint(c, field, center.x, center.y); broadcast(); }
 });
 

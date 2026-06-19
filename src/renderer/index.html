@@ -10,6 +10,11 @@
   <nav class="tabs">
     <button id="tabScreen" class="tab active">🖱 Screen Clicker</button>
     <button id="tabBrowser" class="tab">🌐 Browser Bot</button>
+    <div class="tab-run">
+      <span id="runState" class="run-state"></span>
+      <button id="runBothBtn" class="btn run small" title="Run the screen clicker and browser bot at the same time (F8)">▶ Run both</button>
+      <button id="stopBothBtn" class="btn stop small" title="Stop both (F8)" disabled>■ Stop both</button>
+    </div>
   </nav>
 
   <!-- ============ Screen Clicker ============ -->
@@ -67,6 +72,9 @@
         <button id="bbGo" class="btn">Go</button>
       </div>
       <div class="group right">
+        <label class="check" title="Repeat the whole sequence until you press Stop">
+          <input type="checkbox" id="bbLoop" /> Loop
+        </label>
         <button id="bbRunBtn" class="btn run">▶ Run</button>
         <button id="bbStopBtn" class="btn stop" disabled>■ Stop</button>
         <span id="bbStatus" class="status idle">Idle</span>
@@ -76,7 +84,7 @@
     <div class="bb-split">
       <div class="bb-side">
         <div class="bb-add">
-          <span class="bb-add-label">Add step:</span>
+          <span class="bb-add-label">Web:</span>
           <button class="btn ghost small" data-kind="navigate">Navigate</button>
           <button class="btn ghost small" data-kind="clickEl">Click</button>
           <button class="btn ghost small" data-kind="typeText">Type</button>
@@ -85,6 +93,11 @@
           <button class="btn ghost small" data-kind="read">Read</button>
           <button class="btn ghost small" data-kind="scrollToEl">Scroll to</button>
           <button class="btn ghost small" data-kind="if">If / Else</button>
+          <span class="bb-add-label">Screen:</span>
+          <button class="btn ghost small" data-kind="screenClick">Click</button>
+          <button class="btn ghost small" data-kind="screenDrag">Drag</button>
+          <button class="btn ghost small" data-kind="screenScroll">Scroll</button>
+          <button class="btn ghost small" data-kind="key">Key</button>
         </div>
         <div id="browserRows" class="bb-steps"></div>
         <div id="bbEmpty" class="empty">No browser steps yet. Type a URL above and press <b>Go</b>, then add steps. Use <b>Click</b> / <b>Type</b> with a selector (use <b>Pick</b> to grab one off the page), and <b>If / Else</b> to branch on what the page actually contains.</div>

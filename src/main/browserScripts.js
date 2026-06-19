@@ -10,13 +10,28 @@
 // navigation (a load wipes window globals).
 const BB_HELPERS = `(function () {
   window.__bb = {
+    // Collect matches from the top document and any reachable (same-origin)
+    // iframes. Cross-origin frames throw on contentDocument and are skipped.
+    _collect: function (sel) {
+      var out = [];
+      function scan(doc) {
+        try {
+          var found = sel ? doc.querySelectorAll(sel) : doc.querySelectorAll('body *');
+          Array.prototype.push.apply(out, Array.prototype.slice.call(found));
+        } catch (_) {}
+        var frames;
+        try { frames = doc.querySelectorAll('iframe, frame'); } catch (_) { frames = []; }
+        for (var i = 0; i < frames.length; i++) {
+          var idoc = null;
+          try { idoc = frames[i].contentDocument; } catch (_) { idoc = null; }
+          if (idoc) scan(idoc);
+        }
+      }
+      scan(document);
+      return out;
+    },
     find: function (sel, text, nth) {
-      var nodes;
-      try {
-        nodes = sel
-          ? Array.prototype.slice.call(document.querySelectorAll(sel))
-          : Array.prototype.slice.call(document.querySelectorAll('body *'));
-      } catch (_) { nodes = []; }
+      var nodes = this._collect(sel);
       if (text) {
         var t = String(text).toLowerCase();
         nodes = nodes.filter(function (el) {
@@ -27,6 +42,32 @@ const BB_HELPERS = `(function () {
     },
     visible: function (el) {
       return !!el && !!(el.offsetWidth || el.offsetHeight || (el.getClientRects && el.getClientRects().length));
+    },
+    // If a matched node isn't itself interactive but wraps exactly one such
+    // control (a common search-bar pattern), act on the inner control instead.
+    _focusTarget: function (el) {
+      if (!el) return el;
+      var tag = (el.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' ||
+          tag === 'button' || tag === 'a' || el.isContentEditable) return el;
+      var inner = el.querySelector(
+        'input, textarea, select, button, a, [contenteditable=""], [contenteditable="true"]');
+      return inner || el;
+    },
+    // Dispatch a pointer/mouse event at the element's center. Uses PointerEvent
+    // when available (most React handlers listen for it), else MouseEvent.
+    _fire: function (el, type, right) {
+      var r = {};
+      try { r = el.getBoundingClientRect(); } catch (_) {}
+      var opts = {
+        bubbles: true, cancelable: true, composed: true, view: window,
+        clientX: (r.left || 0) + (r.width || 0) / 2,
+        clientY: (r.top || 0) + (r.height || 0) / 2,
+        button: right ? 2 : 0, buttons: right ? 2 : 1,
+      };
+      var Ctor = (typeof PointerEvent === 'function' && type.indexOf('pointer') === 0)
+        ? PointerEvent : MouseEvent;
+      try { el.dispatchEvent(new Ctor(type, opts)); } catch (_) {}
     },
     test: function (cond) {
       cond = cond || {};
@@ -44,32 +85,68 @@ const BB_HELPERS = `(function () {
         default: return !!el;
       }
     },
+    // Activate an element like a real user would: focus it, then fire the full
+    // pointer/mouse sequence. A bare el.click() doesn't move focus (so a search
+    // bar stays inert) and skips the pointerdown/mousedown many SPAs rely on.
     click: function (sel, text, nth, button, dbl) {
       var el = this.find(sel, text, nth);
       if (!el) return false;
+      el = this._focusTarget(el);
       try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (_) {}
+      try { el.focus({ preventScroll: true }); } catch (_) {}
       if (button === 'right') {
-        el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+        this._fire(el, 'pointerdown', true); this._fire(el, 'mousedown', true);
+        this._fire(el, 'pointerup', true); this._fire(el, 'mouseup', true);
+        this._fire(el, 'contextmenu', true);
         return true;
       }
-      if (dbl) el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-      el.click();
+      this._fire(el, 'pointerover'); this._fire(el, 'pointerenter');
+      this._fire(el, 'mouseover');
+      this._fire(el, 'pointerdown'); this._fire(el, 'mousedown');
+      this._fire(el, 'pointerup'); this._fire(el, 'mouseup');
+      try { el.click(); } catch (_) {}
+      if (dbl) { try { el.click(); } catch (_) {} this._fire(el, 'dblclick'); }
       return true;
     },
+    // Type into inputs/textareas via the native value setter so React's value
+    // tracker sees the change (a plain el.value = ... is silently ignored by
+    // React); handle contenteditable boxes (e.g. message composers) too.
     type: function (sel, text, nth, value, clear, enter) {
       var el = this.find(sel, text, nth);
       if (!el) return false;
-      try { el.focus(); } catch (_) {}
+      el = this._focusTarget(el);
+      try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (_) {}
+      try { el.focus({ preventScroll: true }); } catch (_) {}
       var v = String(value == null ? '' : value);
-      try {
-        if ('value' in el) el.value = clear ? v : (el.value || '') + v;
-        else el.textContent = clear ? v : (el.textContent || '') + v;
-      } catch (_) {}
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+
+      if (el.isContentEditable) {
+        if (clear) el.textContent = '';
+        try { el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: v })); } catch (_) {}
+        var inserted = false;
+        try { inserted = document.execCommand && document.execCommand('insertText', false, v); } catch (_) {}
+        if (!inserted) el.textContent = (clear ? '' : (el.textContent || '')) + v;
+        try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: v })); }
+        catch (_) { el.dispatchEvent(new Event('input', { bubbles: true })); }
+      } else if ('value' in el) {
+        var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        var next = clear ? v : (el.value || '') + v;
+        if (desc && desc.set) desc.set.call(el, next); else el.value = next;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        el.textContent = clear ? v : (el.textContent || '') + v;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+
+      // Key events so keystroke-driven search / autocomplete handlers run.
+      var last = v.slice(-1) || 'a';
+      ['keydown', 'keyup'].forEach(function (t) {
+        try { el.dispatchEvent(new KeyboardEvent(t, { bubbles: true, key: last })); } catch (_) {}
+      });
       if (enter) {
-        ['keydown', 'keypress', 'keyup'].forEach(function (type) {
-          el.dispatchEvent(new KeyboardEvent(type, { bubbles: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }));
+        ['keydown', 'keypress', 'keyup'].forEach(function (t) {
+          try { el.dispatchEvent(new KeyboardEvent(t, { bubbles: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 })); } catch (_) {}
         });
         if (el.form && typeof el.form.requestSubmit === 'function') {
           try { el.form.requestSubmit(); } catch (_) {}

@@ -35,5 +35,8 @@ contextBridge.exposeInMainWorld('api', {
   browserPickResult: (payload) => ipcRenderer.send('browser:pickResult', payload),
   browserRun: () => ipcRenderer.send('browser:run'),
   browserStop: () => ipcRenderer.send('browser:stop'),
+  setBrowserLoop: (on) => ipcRenderer.send('setBrowserLoop', on),
+  runBoth: () => ipcRenderer.send('runBoth'),
+  stopBoth: () => ipcRenderer.send('stopBoth'),
   onBrowserEngine: (cb) => ipcRenderer.on('browserEngine', (_e, s) => cb(s)),
 });

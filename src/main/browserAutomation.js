@@ -6,6 +6,12 @@
 // Engine, by sharing the same _abort flag + cancellable _sleep pattern.
 const { resolveDelayMs } = require('./automation');
 const { BB_HELPERS } = require('./browserScripts');
+const {
+  clickAt, pressKeys, performDrag, performScroll, evalScreenCondition,
+} = require('./inputActions');
+
+// Condition kinds evaluated against the real screen (vs. the DOM via __bb).
+const SCREEN_CONDS = ['pixel', 'pixelChanged', 'image', 'loop'];
 
 const J = JSON.stringify; // shorthand for embedding args into injected code
 
@@ -26,6 +32,25 @@ class BrowserEngine {
     this.wc = null;          // the guest webContents we drive
     this.vars = {};          // run-scoped values captured by `read` steps
     this._tick = null;
+    this.pass = 0;           // completed full loops (for loop conds + drift)
+  }
+
+  // Control object for shared nut.js actions (drag glide / abort).
+  _ctl() { return { abort: () => this._abort, sleep: (ms) => this._sleep(ms) }; }
+
+  // True if the (nested) sequence contains a step that draws an on-screen
+  // overlay circle (coordinate click/drag/scroll, or a pixel/image condition),
+  // so we pause up front to let those circles hide before clicking. `key` and
+  // `loop`-condition steps have no overlay and need no pause.
+  _needsPrePause(steps) {
+    for (const s of steps || []) {
+      if (s.type === 'screenClick' || s.type === 'screenDrag' || s.type === 'screenScroll') return true;
+      if (s.type === 'if') {
+        if (['pixel', 'pixelChanged', 'image'].includes(s.cond && s.cond.kind)) return true;
+        if (this._needsPrePause(s.then) || this._needsPrePause(s.else)) return true;
+      }
+    }
+    return false;
   }
 
   setGuest(wc) { this.wc = wc; }
@@ -48,15 +73,23 @@ class BrowserEngine {
 
   // steps: array of browser steps (see normalizeBrowserStep in main.js).
   // onTick(id) highlights the current step in the UI.
-  async run(steps, onTick) {
+  // opts.loop: repeat the whole sequence until Stop (pass counter advances).
+  async run(steps, onTick, opts) {
     if (this.running || !this._alive()) return;
+    opts = opts || {};
     this.running = true;
     this._abort = false;
     this.vars = {};
+    this.pass = 0;
     this._tick = typeof onTick === 'function' ? onTick : null;
     try {
       await this._ensureHelpers();
-      await this._runSteps(steps);
+      // Let on-screen circles hide before the first coordinate click.
+      if (this._needsPrePause(steps)) await this._sleep(400);
+      do {
+        await this._runSteps(steps);
+        this.pass++;
+      } while (opts.loop && !this._abort);
     } catch (err) {
       console.error('[browser-engine] run failed', err);
     } finally {
@@ -108,6 +141,23 @@ class BrowserEngine {
         await this._ensureHelpers();
         await this._eval(`window.__bb.scrollTo(${J(s.selector)}, ${J(s.text)}, ${s.nth | 0})`).catch(() => {});
         return;
+      // ----- screen (coordinate / OS-level) actions via nut.js -----
+      case 'screenClick':
+        await clickAt({
+          x: s.x + this.pass * (s.stepX || 0),
+          y: s.y + this.pass * (s.stepY || 0),
+          button: s.button, double: s.double,
+        });
+        return;
+      case 'screenDrag':
+        await performDrag(s, this._ctl());
+        return;
+      case 'screenScroll':
+        await performScroll(s);
+        return;
+      case 'key':
+        await pressKeys(s);
+        return;
       case 'read': {
         await this._ensureHelpers();
         let v = null;
@@ -117,9 +167,15 @@ class BrowserEngine {
         return;
       }
       case 'if': {
-        await this._ensureHelpers();
+        const kind = s.cond && s.cond.kind;
         let ok = false;
-        try { ok = await this._eval(`window.__bb.test(${J(s.cond || {})})`); } catch (_) {}
+        if (SCREEN_CONDS.includes(kind)) {
+          // pixel / image / loop — evaluated against the real screen.
+          ok = await evalScreenCondition(s.cond, this.pass);
+        } else {
+          await this._ensureHelpers();
+          try { ok = await this._eval(`window.__bb.test(${J(s.cond || {})})`); } catch (_) {}
+        }
         await this._runSteps(ok ? (s.then || []) : (s.else || []));
         return;
       }

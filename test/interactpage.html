@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<body>
+  <input id="q" />
+  <div id="editor" contenteditable="true"></div>
+  <iframe id="f"></iframe>
+  <script>
+    // Record whether 'input' events actually fire (proves the dispatch path).
+    window.__inq = false; window.__ined = false;
+    document.getElementById('q').addEventListener('input', function () { window.__inq = true; });
+    document.getElementById('editor').addEventListener('input', function () { window.__ined = true; });
+
+    // Same-origin child frame with a button that flags when truly clicked.
+    var ifr = document.getElementById('f');
+    var d = ifr.contentDocument || ifr.contentWindow.document;
+    d.open(); d.write('<button id="b">go</button>'); d.close();
+    d.getElementById('b').addEventListener('click', function () { ifr.contentWindow.__clicked = true; });
+  </script>
+</body>
+</html>

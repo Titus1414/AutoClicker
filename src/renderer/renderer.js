@@ -22,12 +22,16 @@ const el = {
   tabBrowser: document.getElementById('tabBrowser'),
   screenPanel: document.getElementById('screenPanel'),
   browserPanel: document.getElementById('browserPanel'),
+  runBothBtn: document.getElementById('runBothBtn'),
+  stopBothBtn: document.getElementById('stopBothBtn'),
+  runState: document.getElementById('runState'),
   // browser bot
   bbUrl: document.getElementById('bbUrl'),
   bbGo: document.getElementById('bbGo'),
   bbRunBtn: document.getElementById('bbRunBtn'),
   bbStopBtn: document.getElementById('bbStopBtn'),
   bbStatus: document.getElementById('bbStatus'),
+  bbLoop: document.getElementById('bbLoop'),
   browserRows: document.getElementById('browserRows'),
   bbEmpty: document.getElementById('bbEmpty'),
   bv: document.getElementById('bv'),
@@ -148,7 +152,10 @@ const KEY_OPTIONS = (() => {
 
 const MOD_LABELS = [['ctrl', 'Ctrl'], ['shift', 'Shift'], ['alt', 'Alt'], ['win', 'Win']];
 
-function buildKeys(c) {
+// `update` lets this drive a screen-clicker key step (api.updateClick, default)
+// or a Browser Bot `key` step (api.updateBrowserStep).
+function buildKeys(c, update) {
+  const upd = update || ((patch) => api.updateClick(c.id, patch));
   const wrap = document.createElement('div');
   wrap.className = 'delay keys';
 
@@ -162,7 +169,7 @@ function buildKeys(c) {
     cb.addEventListener('change', () => {
       const next = new Set(c.modifiers || []);
       if (cb.checked) next.add(mod); else next.delete(mod);
-      api.updateClick(c.id, { modifiers: [...next] });
+      upd({ modifiers: [...next] });
     });
     lbl.appendChild(cb);
     lbl.appendChild(document.createTextNode(label));
@@ -173,7 +180,7 @@ function buildKeys(c) {
   plus.className = 'sep'; plus.textContent = '+';
   wrap.appendChild(plus);
 
-  wrap.appendChild(makeSelect(KEY_OPTIONS, c.key || '', (v) => api.updateClick(c.id, { key: v })));
+  wrap.appendChild(makeSelect(KEY_OPTIONS, c.key || '', (v) => upd({ key: v })));
   return wrap;
 }
 
@@ -538,6 +545,23 @@ function bbPickBtn(stepId, fieldName) {
   return b;
 }
 
+// A coordinate cell for browser screen steps: shows the point and a Set (F6)
+// button that arms capture (reusing the screen clicker's F6 + circle flow).
+function bbPosCell(step, fieldName, labelText) {
+  const x = fieldName === 'end' ? step.x2 : step.x;
+  const y = fieldName === 'end' ? step.y2 : step.y;
+  const coords = document.createElement('span');
+  coords.className = 'coords set';
+  coords.textContent = `${x}, ${y}`;
+  const armed = isArmed(step, fieldName);
+  const setBtn = document.createElement('button');
+  setBtn.className = 'btn ghost small';
+  setBtn.textContent = armed ? 'Press F6…' : 'Set (F6)';
+  setBtn.title = 'Arm capture, then press F6 at the target spot (or drag the circle)';
+  setBtn.addEventListener('click', () => api.armCapture(step.id, fieldName));
+  return field(labelText || 'Point', coords, setBtn);
+}
+
 // A small dropdown to insert a step (used for if-branch children).
 function buildAddControl(onPick) {
   const s = document.createElement('select');
@@ -545,7 +569,9 @@ function buildAddControl(onPick) {
   s.style.maxWidth = '170px';
   const opts = [['', '+ add step'], ['navigate', 'Navigate'], ['clickEl', 'Click'],
     ['typeText', 'Type'], ['waitFor', 'Wait for'], ['waitTimeout', 'Wait'],
-    ['read', 'Read'], ['scrollToEl', 'Scroll to'], ['if', 'If / Else']];
+    ['read', 'Read'], ['scrollToEl', 'Scroll to'], ['if', 'If / Else'],
+    ['screenClick', 'Screen Click'], ['screenDrag', 'Screen Drag'],
+    ['screenScroll', 'Screen Scroll'], ['key', 'Key']];
   for (const [v, l] of opts) s.appendChild(opt(v, l, ''));
   s.addEventListener('change', () => { if (s.value) { onPick(s.value); s.value = ''; } });
   const wrap = document.createElement('div');
@@ -564,16 +590,50 @@ function buildBrowserCondition(step, upd) {
   wrap.appendChild(field('If', makeSelect(
     [['elementExists', 'element exists'], ['elementVisible', 'element is visible'],
      ['textExists', 'page contains text'], ['attrEquals', 'attribute equals'],
-     ['attrContains', 'attribute contains']],
+     ['attrContains', 'attribute contains'],
+     ['pixel', 'screen pixel is color'], ['pixelChanged', 'screen pixel changed'],
+     ['image', 'screen region matches'], ['loop', 'loop pass']],
     cond.kind, (v) => cupd({ kind: v })
   )));
 
-  if (cond.kind === 'textExists') {
+  const k = cond.kind;
+  if (k === 'textExists') {
     wrap.appendChild(field('Text', makeText(cond.text, 'text somewhere on the page', (v) => cupd({ text: v }))));
+  } else if (k === 'loop') {
+    const r = field('Pass',
+      makeSelect([['everyN', 'every'], ['firstN', 'first'], ['afterN', 'after']], cond.loopMode, (v) => cupd({ loopMode: v })),
+      makeNumber(cond.loopN, (v) => cupd({ loopN: Number(v) }), 1));
+    const lbl = document.createElement('span'); lbl.className = 'sep'; lbl.textContent = 'pass(es)';
+    r.appendChild(lbl);
+    wrap.appendChild(r);
+  } else if (k === 'pixel' || k === 'pixelChanged' || k === 'image') {
+    // Screen sample point captured with F6 (reuses the screen-clicker flow).
+    const armed = isArmed(step, 'cond');
+    const setBtn = document.createElement('button');
+    setBtn.className = 'btn ghost small';
+    setBtn.textContent = armed ? 'Press F6…' : 'Set point (F6)';
+    setBtn.title = 'Arm capture, then press F6 over the target spot (or drag the circle)';
+    setBtn.addEventListener('click', () => api.armCapture(step.id, 'cond'));
+    const coords = document.createElement('span');
+    coords.className = 'coords'; coords.textContent = `${cond.x}, ${cond.y}`;
+    wrap.appendChild(field('Point', setBtn, coords));
+    if (k === 'image') {
+      wrap.appendChild(field('Region',
+        makeStep('w', cond.w, (v) => cupd({ w: Number(v) })),
+        makeStep('h', cond.h, (v) => cupd({ h: Number(v) }))));
+      wrap.appendChild(field('Match', makeNumber(cond.confidence, (v) => cupd({ confidence: Number(v) }))));
+    } else {
+      const sw = document.createElement('span');
+      sw.className = 'swatch'; sw.style.background = cond.color; sw.title = cond.color;
+      const tol = document.createElement('label'); tol.className = 'axis';
+      const tt = document.createElement('span'); tt.textContent = '±'; tt.title = 'Color tolerance per channel (0–255).';
+      tol.appendChild(tt); tol.appendChild(makeNumber(cond.tolerance, (v) => cupd({ tolerance: Number(v) })));
+      wrap.appendChild(field('Color', sw, tol));
+    }
   } else {
     const sel = makeText(cond.selector, 'CSS selector', (v) => cupd({ selector: v }), { mono: true });
     wrap.appendChild(field('Selector', sel, bbPickBtn(step.id, 'cond')));
-    if (cond.kind === 'attrEquals' || cond.kind === 'attrContains') {
+    if (k === 'attrEquals' || k === 'attrContains') {
       wrap.appendChild(field('Attribute',
         makeText(cond.attr, 'href', (v) => cupd({ attr: v })),
         makeText(cond.value, 'value', (v) => cupd({ value: v }))));
@@ -675,6 +735,28 @@ function buildBrowserStep(step, index, total) {
     fields.appendChild(field('Into var', makeText(step.varName, 'name', (v) => upd({ varName: v }))));
   } else if (step.type === 'scrollToEl') {
     targetRows();
+  } else if (step.type === 'screenClick') {
+    fields.appendChild(bbPosCell(step, 'pos', 'Point'));
+    fields.appendChild(field('Drift/click',
+      makeStep('x', step.stepX, (v) => upd({ stepX: Number(v) })),
+      makeStep('y', step.stepY, (v) => upd({ stepY: Number(v) }))));
+    fields.appendChild(field('Click',
+      makeSelect([['left', 'Left'], ['right', 'Right'], ['middle', 'Middle']], step.button, (v) => upd({ button: v })),
+      makeSelect([['single', 'Single'], ['double', 'Double']], step.double ? 'double' : 'single', (v) => upd({ double: v === 'double' }))));
+  } else if (step.type === 'screenDrag') {
+    fields.appendChild(bbPosCell(step, 'start', 'Start'));
+    fields.appendChild(bbPosCell(step, 'end', 'End'));
+    const ms = document.createElement('span'); ms.className = 'sep'; ms.textContent = 'ms glide';
+    fields.appendChild(field('Button',
+      makeSelect([['left', 'Left'], ['right', 'Right'], ['middle', 'Middle']], step.button, (v) => upd({ button: v })),
+      makeNumber(step.duration, (v) => upd({ duration: Number(v) })), ms));
+  } else if (step.type === 'screenScroll') {
+    fields.appendChild(bbPosCell(step, 'pos', 'Point'));
+    fields.appendChild(field('Scroll',
+      makeSelect([['down', '▼ Down'], ['up', '▲ Up'], ['left', '◀ Left'], ['right', '▶ Right']], step.direction, (v) => upd({ direction: v })),
+      makeNumber(step.amount, (v) => upd({ amount: Number(v) }))));
+  } else if (step.type === 'key') {
+    fields.appendChild(field('Keys', buildKeys(step, upd)));
   } else if (step.type === 'if') {
     fields.appendChild(buildBrowserCondition(step, upd));
     card.appendChild(buildBranch(step, 'then', 'Then'));
@@ -695,6 +777,7 @@ function renderBrowser() {
   el.bbEmpty.classList.toggle('show', current.browserSteps.length === 0);
 
   if (document.activeElement !== el.bbUrl) el.bbUrl.value = (current.browser && current.browser.url) || '';
+  el.bbLoop.checked = !!(current.browser && current.browser.loop);
 
   const running = current.browserRunning;
   el.bbRunBtn.disabled = running || current.browserSteps.length === 0;
@@ -711,6 +794,25 @@ function applyMode() {
   el.tabScreen.classList.toggle('active', !browser);
   el.tabBrowser.classList.toggle('active', browser);
   if (browser) ensureGuest();
+}
+
+// The global "Run both" control lives in the tabs bar and reflects both
+// engines at once, so the user sees/controls them together from either tab.
+function refreshGlobalRun() {
+  const s = current.running, b = current.browserRunning;
+  const hasScreen = current.clicks.length > 0;
+  const hasBrowser = current.browserSteps.length > 0;
+  el.runBothBtn.disabled = (s && b) || (!hasScreen && !hasBrowser);
+  el.stopBothBtn.disabled = !s && !b;
+  el.runState.innerHTML = '';
+  const dot = (label, on) => {
+    const d = document.createElement('span');
+    d.className = 'dot' + (on ? ' on' : '');
+    d.textContent = label;
+    return d;
+  };
+  el.runState.appendChild(dot('Screen', s));
+  el.runState.appendChild(dot('Browser', b));
 }
 
 // Report the webview's webContents id to main once it's attached.
@@ -738,6 +840,7 @@ function render() {
 
   renderBrowser();
   applyMode();
+  refreshGlobalRun();
 }
 
 function refreshToolbar() {
@@ -776,6 +879,10 @@ el.selectAll.addEventListener('change', () => {
 el.tabScreen.addEventListener('click', () => api.setMode('screen'));
 el.tabBrowser.addEventListener('click', () => api.setMode('browser'));
 
+// run/stop both engines together
+el.runBothBtn.addEventListener('click', () => { ensureGuest(); api.runBoth(); });
+el.stopBothBtn.addEventListener('click', () => api.stopBoth());
+
 function goToUrl() { ensureGuest(); api.browserNavigate(el.bbUrl.value); }
 el.bbGo.addEventListener('click', goToUrl);
 el.bbUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter') goToUrl(); });
@@ -785,6 +892,7 @@ el.bbAdd.querySelectorAll('button[data-kind]').forEach((b) => {
 });
 el.bbRunBtn.addEventListener('click', () => { ensureGuest(); api.browserRun(); });
 el.bbStopBtn.addEventListener('click', () => api.browserStop());
+el.bbLoop.addEventListener('change', () => api.setBrowserLoop(el.bbLoop.checked));
 
 // webview wiring: report its id, relay picker results, track the address.
 let bootstrapped = false;
